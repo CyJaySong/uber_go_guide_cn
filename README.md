@@ -76,6 +76,15 @@ change.md
 # 2020-06-10
 - 添加 init() 指导意见
 
+# 2020-06-16
+- 追加时优先指定切片容量
+- 添加有关指针接收器可调用性的说明
+
+# 2020-06-17
+- map和切片的联合指导
+
+# 2020-09-15
+- Remove main panic
 -->
 
 # [uber-go/guide](https://github.com/uber-go/guide) 的中文翻译
@@ -88,7 +97,7 @@ change.md
 
  ## 版本
 
-  - 当前更新版本：2020-06-10 版本地址：[commit:#94](https://github.com/uber-go/guide/commit/ca2631f5ca277d874b989e1736fa896b82a757ab)
+  - 当前更新版本：2020-12-03 版本地址：[commit:#106](https://github.com/uber-go/guide/commit/e4602992ffbc465ea14bce5501cdbfc361fd8c96)
   - 如果您发现任何更新、问题或改进，请随时 fork 和 PR
   - Please feel free to fork and PR if you find any updates, issues or improvement.
 
@@ -114,10 +123,13 @@ change.md
   - [避免在公共结构中嵌入类型](#避免在公共结构中嵌入类型)
   - [避免使用内置名称](#避免使用内置名称)
   - [避免使用 `init()`](#避免使用-`init()`)
+  - [追加时优先指定切片容量](#追加时优先指定切片容量)
 - [性能](#性能)
   - [优先使用 strconv 而不是 fmt](#优先使用-strconv-而不是-fmt)
-  - [避免字符串到字节的转换](#避免字符串到字节的转换)
-  - [尽量初始化时指定 Map 容量](#尽量初始化时指定-Map-容量)
+  - [避免字符串到字节的转换](#避免字符串到字节的转换)  
+  - [指定容器容量](#指定容器容量)
+      - [指定Map容量提示](#指定Map容量提示)
+      - [指定切片容量](#指定切片容量)
 - [规范](#规范)
   - [一致性](#一致性)
   - [相似的声明放在一组](#相似的声明放在一组)
@@ -144,6 +156,7 @@ change.md
 - [编程模式](#编程模式)
   - [表驱动测试](#表驱动测试)
   - [功能选项](#功能选项)
+- [Linting](#linting)
 
 ## 介绍
 
@@ -180,15 +193,38 @@ change.md
 1. 一个指向某些特定类型信息的指针。您可以将其视为"type"。
 2. 数据指针。如果存储的数据是指针，则直接存储。如果存储的数据是一个值，则存储指向该值的指针。
 
-如果希望接口方法修改基础数据，则必须使用指针传递。
+如果希望接口方法修改基础数据，则必须使用指针传递(将对象指针赋值给接口变量)。
+
+```go
+type F interface {
+  f()
+}
+
+type S1 struct{}
+
+func (s S1) f() {}
+
+type S2 struct{}
+
+func (s *S2) f() {}
+
+// f1.f()无法修改底层数据
+// f2.f() 可以修改底层数据,给接口变量f2赋值时使用的是对象指针
+var f1 F:= S1{}
+var f2 F:= &S2{}
+```
 
 ### Interface 合理性验证
 
 在编译时验证接口的符合性。这包括：
 
-- 将实现特定接口所需的导出类型作为其 API 的一部分
-- 导出或未导出的类型是实现同一接口的类型集合的一部分
-- 其他违反接口的情况会破坏用户。
+- 将实现特定接口的导出类型作为接口API 的一部分进行检查
+- 实现同一接口的(导出和非导出)类型属于实现类型的集合
+- 任何违反接口合理性检查的场景,都会终止编译,并通知给用户
+
+补充:上面3条是编译器对接口的检查机制,
+大体意思是错误使用接口会在编译期报错.
+所以可以利用这个机制让部分问题在编译期暴露.
 
 <table>
 <thead><tr><th>Bad</th><th>Good</th></tr></thead>
@@ -196,6 +232,7 @@ change.md
 <tr><td>
 
 ```go
+// 如果Handler没有实现http.Handler,会在运行时报错
 type Handler struct {
   // ...
 }
@@ -213,6 +250,8 @@ func (h *Handler) ServeHTTP(
 type Handler struct {
   // ...
 }
+// 用于触发编译期的接口的合理性检查机制
+// 如果Handler没有实现http.Handler,会在编译期报错
 var _ http.Handler = (*Handler)(nil)
 func (h *Handler) ServeHTTP(
   w http.ResponseWriter,
@@ -225,9 +264,12 @@ func (h *Handler) ServeHTTP(
 </td></tr>
 </tbody></table>
 
-如果 `*Handler` 永远不会与 `http.Handler` 接口匹配,那么语句 `var _ http.Handler = (*Handler)(nil)` 将无法编译
+如果 `*Handler` 与 `http.Handler` 的接口不匹配,
+那么语句 `var _ http.Handler = (*Handler)(nil)` 将无法编译通过.
 
-赋值的右边应该是断言类型的零值。对于指针类型（如 `*Handler`）、切片和映射，这是 `nil`；对于结构类型，这是空结构。
+赋值的右边应该是断言类型的零值。
+对于指针类型（如 `*Handler`）、切片和映射，这是 `nil`；
+对于结构类型，这是空结构。
 
 ```go
 type LogHandler struct {
@@ -243,10 +285,13 @@ func (h LogHandler) ServeHTTP(
 }
 ```
 
-
 ### 接收器 (receiver) 与接口
 
 使用值接收器的方法既可以通过值调用，也可以通过指针调用。
+
+带指针接收器的方法只能通过指针或 [addressable values]调用.
+
+  [addressable values]: https://golang.org/ref/spec#Method_values
 
 例如，
 
@@ -278,7 +323,7 @@ sPtrs[1].Read()
 sPtrs[1].Write("test")
 ```
 
-同样，即使该方法具有值接收器，也可以通过指针来满足接口。
+类似的,即使方法有了值接收器,也同样可以用指针接收器来满足接口.
 
 ```go
 type F interface {
@@ -308,6 +353,27 @@ i = s2Ptr
 ```
 
 [Effective Go](https://golang.org/doc/effective_go.html) 中有一段关于 [pointers vs. values](https://golang.org/doc/effective_go.html#pointers_vs_values) 的精彩讲解。
+
+补充:
+
+- 一个类型可以有值接收器方法集和指针接收器方法集
+  - 值接收器方法集是指针接收器方法集的子集,反之不是
+- 规则
+  - 值对象只可以使用值接收器方法集
+  - 指针对象可以使用 值接收器方法集 + 指针接收器方法集
+- 接口的匹配(或者叫实现)
+  - 类型实现了接口的所有方法,叫匹配
+  - 具体的讲,要么是类型的值方法集匹配接口,要么是指针方法集匹配接口
+
+具体的匹配分两种:
+
+- 值方法集和接口匹配
+  - 给接口变量赋值的不管是值还是指针对象,都ok,因为都包含值方法集
+- 指针方法集和接口匹配
+  - 只能将指针对象赋值给接口变量,因为只有指针方法集和接口匹配
+  - 如果将值对象赋值给接口变量,会在编译期报错(会触发接口合理性检查机制)
+
+为啥 i = s2Val 会报错,因为值方法集和接口不匹配.
 
 ### 零值 Mutex 是有效的
 
@@ -1028,40 +1094,33 @@ fine. -->
 <tr><td>
 
 ```go
-func foo(bar string) {
-  if len(bar) == 0 {
-    panic("bar must not be empty")
+func run(args []string) {
+  if len(args) == 0 {
+    panic("an argument is required")
   }
   // ...
 }
 
 func main() {
-  if len(os.Args) != 2 {
-    fmt.Println("USAGE: foo <bar>")
-    os.Exit(1)
-  }
-  foo(os.Args[1])
+  run(os.Args[1:])
 }
 ```
 
 </td><td>
 
 ```go
-func foo(bar string) error {
-  if len(bar) == 0 {
-    return errors.New("bar must not be empty")
+func run(args []string) error {
+  if len(args) == 0 {
+    return errors.New("an argument is required")
   }
   // ...
   return nil
 }
 
 func main() {
-  if len(os.Args) != 2 {
-    fmt.Println("USAGE: foo <bar>")
+  if err := run(os.Args[1:]); err != nil {
+    fmt.Fprintln(os.Stderr, err)
     os.Exit(1)
-  }
-  if err := foo(os.Args[1]); err != nil {
-    panic(err)
   }
 }
 ```
@@ -1269,11 +1328,11 @@ type ConcreteList struct {
 }
 // 添加将实体添加到列表中。
 func (l *ConcreteList) Add(e Entity) {
-  return l.list.Add(e)
+  l.list.Add(e)
 }
 // 移除从列表中移除实体。
 func (l *ConcreteList) Remove(e Entity) {
-  return l.list.Remove(e)
+  l.list.Remove(e)
 }
 ```
 
@@ -1316,15 +1375,15 @@ type ConcreteList struct {
 ```go
 // ConcreteList 是一个实体列表。
 type ConcreteList struct {
-  list *AbstractList
+  list AbstractList
 }
 // 添加将实体添加到列表中。
 func (l *ConcreteList) Add(e Entity) {
-  return l.list.Add(e)
+  l.list.Add(e)
 }
 // 移除从列表中移除实体。
 func (l *ConcreteList) Remove(e Entity) {
-  return l.list.Remove(e)
+  l.list.Remove(e)
 }
 ```
 
@@ -1434,7 +1493,7 @@ func (f Foo) String() string {
 3. 避免访问或操作全局或环境状态，如机器信息、环境变量、工作目录、程序参数/输入等。
 4. 避免`I/O`，包括文件系统、网络和系统调用。
 
-不能满足这些要求的代码可能属于要作为`main()`调用的一部分`（或程序生命周期中的其他地方），
+不能满足这些要求的代码可能属于要作为`main()`调用的一部分（或程序生命周期中的其他地方），
 或者作为`main()`本身的一部分写入。特别是，打算由其他程序使用的库应该特别注意完全确定性，
 而不是执行“init magic”
 
@@ -1519,6 +1578,53 @@ func loadConfig() Config {
 
   [Google Cloud Functions]: https://cloud.google.com/functions/docs/bestpractices/tips#use_global_variables_to_reuse_objects_in_future_invocations
 
+### 追加时优先指定切片容量
+
+追加时优先指定切片容量
+
+在尽可能的情况下，在初始化要追加的切片时为`make()`提供一个容量值。
+
+<table>
+<thead><tr><th>Bad</th><th>Good</th></tr></thead>
+<tbody>
+<tr><td>
+
+```go
+for n := 0; n < b.N; n++ {
+  data := make([]int, 0)
+  for k := 0; k < size; k++{
+    data = append(data, k)
+  }
+}
+```
+
+</td><td>
+
+```go
+for n := 0; n < b.N; n++ {
+  data := make([]int, 0, size)
+  for k := 0; k < size; k++{
+    data = append(data, k)
+  }
+}
+```
+
+</td></tr>
+<tr><td>
+
+```
+BenchmarkBad-4    100000000    2.48s
+```
+
+</td><td>
+
+```
+BenchmarkGood-4   100000000    0.21s
+```
+
+</td></tr>
+</tbody></table>
+
 ## 性能
 
 性能方面的特定准则只适用于高频场景。
@@ -1562,6 +1668,8 @@ BenchmarkStrconv-4    64.2 ns/op    1 allocs/op
 </td></tr>
 </tbody></table>
 
+
+
 ### 避免字符串到字节的转换
 
 不要反复从固定字符串创建字节 slice。相反，请执行一次转换并捕获结果。
@@ -1602,7 +1710,11 @@ BenchmarkGood-4  500000000   3.25 ns/op
 </td></tr>
 </tbody></table>
 
-### 尽量初始化时指定 Map 容量
+### 指定容器容量
+
+尽可能指定容器容量，以便为容器预先分配内存。这将在添加元素时最小化后续分配（通过复制和调整容器大小）。
+
+#### 指定Map容量提示
 
 在尽可能的情况下，在使用 `make()` 初始化的时候提供容量信息
 
@@ -1610,9 +1722,11 @@ BenchmarkGood-4  500000000   3.25 ns/op
 make(map[T1]T2, hint)
 ```
 
-为 `make()` 提供容量信息（hint）尝试在初始化时调整 map 大小，
-这减少了在将元素添加到 map 时增长和分配的开销。
-注意，map 不能保证分配 hint 个容量。因此，即使提供了容量，添加元素仍然可以进行分配。 
+向`make()`提供容量提示会在初始化时尝试调整map的大小，这将减少在将元素添加到map时为map重新分配内存。
+
+
+注意，与slices不同。map capacity提示并不保证完全的抢占式分配，而是用于估计所需的hashmap bucket的数量。
+因此，在将元素添加到map时，甚至在指定map容量时，仍可能发生分配。
 
 <table>
 <thead><tr><th>Bad</th><th>Good</th></tr></thead>
@@ -1652,6 +1766,58 @@ for _, f := range files {
 </td></tr>
 </tbody></table>
 
+#### 指定切片容量
+
+在尽可能的情况下，在使用`make()`初始化切片时提供容量信息，特别是在追加切片时。
+
+```go
+make([]T, length, capacity)
+```
+
+与maps不同，slice capacity不是一个提示：编译器将为提供给`make()`的slice的容量分配足够的内存，
+这意味着后续的append()`操作将导致零分配（直到slice的长度与容量匹配，在此之后，任何append都可能调整大小以容纳其他元素）。
+
+<table>
+<thead><tr><th>Bad</th><th>Good</th></tr></thead>
+<tbody>
+<tr><td>
+
+```go
+for n := 0; n < b.N; n++ {
+  data := make([]int, 0)
+  for k := 0; k < size; k++{
+    data = append(data, k)
+  }
+}
+```
+
+</td><td>
+
+```go
+for n := 0; n < b.N; n++ {
+  data := make([]int, 0, size)
+  for k := 0; k < size; k++{
+    data = append(data, k)
+  }
+}
+```
+
+</td></tr>
+<tr><td>
+
+```
+BenchmarkBad-4    100000000    2.48s
+```
+
+</td><td>
+
+```
+BenchmarkGood-4   100000000    0.21s
+```
+
+</td></tr>
+</tbody></table>
+
 ## 规范
 
 ### 一致性
@@ -1662,8 +1828,7 @@ for _, f := range files {
 
 一致性的代码更容易维护、是更合理的、需要更少的学习成本、并且随着新的约定出现或者出现错误后更容易迁移、更新、修复 bug
 
-相反，一个单一的代码库会导致维护成本开销、不确定性和认知偏差。所有这些都会直接导致速度降低、
-代码审查痛苦、而且增加 bug 数量
+相反，在一个代码库中包含多个完全不同或冲突的代码风格会导致维护成本开销、不确定性和认知偏差。所有这些都会直接导致速度降低、代码审查痛苦、而且增加 bug 数量。
 
 将这些标准应用于代码库时，建议在 package（或更大）级别进行更改，子包级别的应用程序通过将多个样式引入到同一代码中，违反了上述关注点。
 
@@ -2169,7 +2334,7 @@ type Client struct {
 - 允许用户观察或控制类型内部。
 - 通过包装的方式改变内部函数的一般行为，这种包装方式会给用户带来一些意料之外情况。
 
-简单地说，有意识地和有意识地嵌入。一种很好的测试体验是，
+简单地说，有意识地和有目的地嵌入。一种很好的测试体验是，
 "是否所有这些导出的内部方法/字段都将直接添加到外部类型"
 如果答案是`some`或`no`，不要嵌入内部类型-而是使用字段。
 
@@ -2655,7 +2820,7 @@ var (
 </td></tr>
 </tbody></table>
 
-在尽可能的情况下，请在初始化时提供 map 容量大小，详细请看 [尽量初始化时指定 Map 容量](#尽量初始化时指定-Map-容量)。
+在尽可能的情况下，请在初始化时提供 map 容量大小，详细请看 [指定Map容量提示](#指定Map容量提示)。
 
 
 另外，如果 map 包含固定的元素列表，则使用 map literals(map 初始化列表) 初始化映射。
@@ -2979,6 +3144,35 @@ func Open(
 
 <!-- TODO: replace this with parameter structs and functional options, when to
 use one vs other -->
+
+## Linting
+
+比任何 "blessed" linter 集更重要的是，lint在一个代码库中始终保持一致。
+
+我们建议至少使用以下linters，因为我认为它们有助于发现最常见的问题，并在不需要规定的情况下为代码质量建立一个高标准：
+
+- [errcheck] 以确保错误得到处理
+- [goimports] 格式化代码和管理 imports
+- [golint] 指出常见的文体错误
+- [govet] 分析代码中的常见错误
+- [staticcheck] 各种静态分析检查
+
+  [errcheck]: https://github.com/kisielk/errcheck
+  [goimports]: https://godoc.org/golang.org/x/tools/cmd/goimports
+  [golint]: https://github.com/golang/lint
+  [govet]: https://golang.org/cmd/vet/
+  [staticcheck]: https://staticcheck.io/
+
+
+### Lint Runners
+
+我们推荐 [golangci-lint] 作为go-to lint的运行程序，这主要是因为它在较大的代码库中的性能以及能够同时配置和使用许多规范。这个repo有一个示例配置文件[.golangci.yml]和推荐的linter设置。
+
+golangci-lint 有[various-linters]可供使用。建议将上述linters作为基本set，我们鼓励团队添加对他们的项目有意义的任何附加linters。
+
+  [golangci-lint]: https://github.com/golangci/golangci-lint
+  [.golangci.yml]: https://github.com/uber-go/guide/blob/master/.golangci.yml
+  [various-linters]: https://golangci-lint.run/usage/linters/
 
 
 ## Stargazers over time
